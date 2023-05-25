@@ -83,9 +83,13 @@ static int get_rga_format(int av_fmt) {
 
 // only pixel conversion, keep width/height
 static int rkmpp_write_nv12(MppBuffer mpp_buffer, int mpp_vir_width,
-                            int mpp_vir_height, AVFrame* dst_frame) {
-    rga_info_t src_info = {0};
-    rga_info_t dst_info = {0};
+                            int mpp_vir_height, AVFrame *dst_frame)
+{
+
+    rga_buffer_t rga_src_new = {0};
+    rga_buffer_t rga_dst_new = {0};
+    // rga_info_t src_info = {0};
+    // rga_info_t dst_info = {0};
     int width = dst_frame->width - (dst_frame->crop_right + dst_frame->crop_left);
     int height = dst_frame->height - (dst_frame->crop_bottom + dst_frame->crop_top);
     int possible_height;
@@ -97,61 +101,86 @@ static int rkmpp_write_nv12(MppBuffer mpp_buffer, int mpp_vir_width,
     if (rga_supported <= 0)
         goto bail;
 
-    possible_height =
-        (dst_frame->data[1] - dst_frame->data[0]) / dst_frame->linesize[0];
+    possible_height = (dst_frame->data[1] - dst_frame->data[0]) / dst_frame->linesize[0];
 
     if (dst_frame->format == AV_PIX_FMT_YUV420P &&
         (dst_frame->linesize[0] != 2 * dst_frame->linesize[1] ||
          dst_frame->linesize[1] != dst_frame->linesize[2] ||
          dst_frame->data[1] - dst_frame->data[0] !=
-         4 * (dst_frame->data[2] - dst_frame->data[1]))) {
+             4 * (dst_frame->data[2] - dst_frame->data[1])))
+    {
         av_log(NULL, AV_LOG_DEBUG, "dst frame memory is not continuous for planes, fall down to soft copy\n");
         goto bail; // mostly is not continuous memory
     }
 
-    src_info.fd = mpp_buffer_get_fd(mpp_buffer);
-#ifndef CONFIG_ION
-    src_info.mmuFlag = 1;
-#endif
-    // mpp decoder always return nv12(yuv420sp)
-    rga_set_rect(&src_info.rect, 0, 0, width, height,
-                 mpp_vir_width, mpp_vir_height, RK_FORMAT_YCbCr_420_SP);
+    // src_info.fd = mpp_buffer_get_fd(mpp_buffer);
+    rga_src_new.fd = mpp_buffer_get_fd(mpp_buffer);
 
-    dst_info.fd = -1;
+    // mpp decoder always return nv12(yuv420sp)
+    // rga_set_rect(&src_info.rect, 0, 0, width, height, mpp_vir_width, mpp_vir_height, RK_FORMAT_YCbCr_420_SP);
+    rga_src_new.width = width;
+    rga_src_new.height = height;
+    rga_src_new.wstride = mpp_vir_width;
+    rga_src_new.hstride = mpp_vir_height;
+    rga_src_new.format = RK_FORMAT_YCbCr_420_SP;
+
+    // dst_info.fd = -1;
+    rga_dst_new.fd = -1;
     // dst_frame data[*] must be continuous
-    dst_info.virAddr = dst_frame->data[0];
-#ifndef CONFIG_ION
-    dst_info.mmuFlag = 1;
-#endif
-    rga_set_rect(&dst_info.rect, dst_frame->crop_left, dst_frame->crop_top,
-                 width, height, dst_frame->linesize[0], possible_height,
-                 rga_format);
-    if (c_RkRgaBlit(&src_info, &dst_info, NULL) < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Failed to do rga blit\n");
+    // dst_info.virAddr = dst_frame->data[0];
+    rga_dst_new.vir_addr = dst_frame->data[0];
+
+    // rga_set_rect(&dst_info.rect, dst_frame->crop_left, dst_frame->crop_top, width, height, dst_frame->linesize[0], possible_height, rga_format);
+    rga_dst_new.width = width;
+    rga_dst_new.height = height;
+    rga_dst_new.wstride = dst_frame->linesize[0];
+    rga_dst_new.hstride = possible_height;
+    rga_dst_new.format = rga_format; // RK_FORMAT_YCbCr_420_SP
+
+    // if (c_RkRgaBlit(&src_info, &dst_info, NULL) < 0) {
+    //     av_log(NULL, AV_LOG_ERROR, "Failed to do rga blit\n");
+    //     goto bail;
+    // }
+
+    // RGA2 require memory address under 4G
+    // RGA3 not supported RK_FORMAT_YCbCr_420_P
+    imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1);
+    int ret = imcopy(rga_src_new, rga_dst_new, 1);
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        av_log(NULL, AV_LOG_ERROR, "Failed to do imcopy[%d], fall down to soft copy\n", ret);
         goto bail;
     }
     return 0;
 
 bail:
-    do {
+    do
+    {
         int i;
-        uint8_t* src_ptr = (uint8_t*) mpp_buffer_get_ptr(mpp_buffer);
+        uint8_t *src_ptr = (uint8_t *)mpp_buffer_get_ptr(mpp_buffer);
         for (i = 0; i < height; i++)
-            memcpy(dst_frame->data[0] + dst_frame->linesize[0] * i,
-                   src_ptr + mpp_vir_width * i, width);
+        {
+            memcpy(dst_frame->data[0] + dst_frame->linesize[0] * i, src_ptr + mpp_vir_width * i, width);
+        }
         src_ptr += mpp_vir_width * mpp_vir_height;
-        switch (dst_frame->format) {
+
+        switch (dst_frame->format)
+        {
         case AV_PIX_FMT_NV12:
             for (i = 0; i < height / 2; i++)
-                memcpy(dst_frame->data[1] + dst_frame->linesize[1] * i,
-                   src_ptr + mpp_vir_width * i, width);
+            {
+                memcpy(dst_frame->data[1] + dst_frame->linesize[1] * i, src_ptr + mpp_vir_width * i, width);
+            }
             return 0;
-        case AV_PIX_FMT_YUV420P: {
+        case AV_PIX_FMT_YUV420P:
+        {
             int j;
-            uint8_t* dst_u = dst_frame->data[1];
-            uint8_t* dst_v = dst_frame->data[2];
-            for (i = 0; i < height / 2; i++) {
-                for (j = 0; j < width; j++) {
+            uint8_t *dst_u = dst_frame->data[1];
+            uint8_t *dst_v = dst_frame->data[2];
+            for (i = 0; i < height / 2; i++)
+            {
+                for (j = 0; j < width; j++)
+                {
                     dst_u[j] = src_ptr[2 * j + 0];
                     dst_v[j] = src_ptr[2 * j + 1];
                 }
@@ -164,7 +193,7 @@ bail:
         default:
             break;
         }
-    } while(0);
+    } while (0);
 
     return AVERROR(EINVAL);
 }
