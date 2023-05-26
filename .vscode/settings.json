@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "imgutils.h": "c",
+        "rk_mpi.h": "c",
+        "rk_mpi_cmd.h": "c",
+        "mpp_task.h": "c",
+        "im2d.hpp": "c",
+        "im2d.h": "c"
+    }
+}

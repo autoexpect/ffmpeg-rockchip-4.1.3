@@ -25,6 +25,7 @@
 
 #include <pthread.h>
 #include <rga/RgaApi.h>
+#include <rga/im2d.h>
 #include <rockchip/mpp_buffer.h>
 #include <rockchip/rk_mpi.h>
 #include <time.h>

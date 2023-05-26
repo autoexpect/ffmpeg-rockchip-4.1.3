@@ -2673,6 +2673,7 @@ static int stream_component_open(VideoState *is, int stream_index)
     if (ret < 0)
         goto fail;
     avctx->pkt_timebase = ic->streams[stream_index]->time_base;
+    avctx->pix_fmt = AV_PIX_FMT_NV12;
 
     codec = avcodec_find_decoder(avctx->codec_id);
 
